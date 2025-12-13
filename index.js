@@ -9,19 +9,19 @@ module.exports = {
   plugin_name: "blocksuite",
   headers: [
     {
-      script: `/plugins/public/blocksuite${verstring}/dist/blocksuite/blocksuite-core.js`,
+      script: `/plugins/public/blocksuite${verstring}/js/blocksuite-core.js`,
     },
     {
-      script: `/plugins/public/blocksuite${verstring}/dist/blocksuite/blocksuite-blocks.js`,
+      script: `/plugins/public/blocksuite${verstring}/js/blocksuite-blocks.js`,
     },
     {
-      script: `/plugins/public/blocksuite${verstring}/dist/blocksuite/blocksuite-editor.js`,
+      css: `/plugins/public/blocksuite${verstring}/css/blocksuite-core.css`,
     },
     {
-      css: `/plugins/public/blocksuite${verstring}/dist/blocksuite/blocksuite-core.css`,
+      css: `https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.0.0/dist/themes/dark.css`,
     },
     {
-      css: `/plugins/public/blocksuite${verstring}/dist/blocksuite/blocksuite-blocks.css`,
+      css: `https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.0.0/dist/themes/light.css`,
     },
   ],
   viewtemplates: [require("./blocksuite-view.js")],
