@@ -1,0 +1,376 @@
+const Table = require("@saltcorn/data/models/table");
+const Workflow = require("@saltcorn/data/models/workflow");
+const Form = require("@saltcorn/data/models/form");
+const { div, script, button, domReady } = require("@saltcorn/markup/tags");
+
+// Configuration workflow: user selects the field to store the JSON
+const configuration_workflow = () =>
+  new Workflow({
+    steps: [
+      {
+        name: "Configuration",
+        form: async (context) => {
+          const table = await Table.findOne(context.table_id);
+          const options = table
+            .getFields()
+            .filter((f) =>
+              ["JSON", "String", "Text"].includes(f.type?.name || f.type)
+            )
+            .map((f) => f.name);
+
+          return new Form({
+            fields: [
+              {
+                name: "json_field",
+                label: "BlockSuite JSON field",
+                type: "String",
+                attributes: { options },
+                required: true,
+              },
+            ],
+          });
+        },
+      },
+    ],
+  });
+
+const get_state_fields = () => [];
+
+// Run: render the editor container and client script
+const run = async (
+  table_id,
+  viewname,
+  configuration,
+  state,
+  extraArgs = {}
+) => {
+  const { req, res } = extraArgs;
+  const csrfToken = req && req.csrfToken ? req.csrfToken() : "";
+  const json_field = configuration.json_field;
+  const table = await Table.findOne(table_id);
+
+  const fieldName = configuration.json_field;
+
+  let row;
+  try {
+    row = state && state.id ? await table.getRow(state.id) : null;
+  } catch (e) {
+    row = null;
+  }
+  const rawVal = row && fieldName && row[fieldName] ? row[fieldName] : null;
+  const initialJSON = rawVal ? rawVal : null;
+
+  const rnd = 0;
+  const saveBtnId = `blocksuite-save-${rnd}`;
+  const statusId = `blocksuite-status-${rnd}`;
+
+  const out = [];
+  out.push(`<div id="${statusId}" class="mt-2"></div>`);
+  out.push(`<div id="toolbar" class="d-flex gap-2 align-items-center mb-2 p-2 border-bottom">
+      <button id="btn-toggle-theme" class="btn btn-secondary btn-sm">Dark</button>
+      <button id="btn-undo" class="btn btn-outline-secondary btn-sm" title="Undo">↩</button>
+      <button id="btn-redo" class="btn btn-outline-secondary btn-sm" title="Redo">↪</button>
+      <button id="btn-switch-editor" class="btn btn-outline-secondary btn-sm" title="Switch Editor Mode">⇄</button>
+      <button id="btn-new-doc" class="btn btn-primary btn-sm">+ New Doc</button>
+      <span class="border-start mx-2" style="height: 20px;"></span>
+      <div id="doc-list" class="d-flex gap-1 flex-wrap"></div>
+    </div>`);
+  out.push(`<div id="affine-editor-container" style="height: 70vh;"></div>`);
+  out.push(
+    button(
+      { id: saveBtnId, class: "btn btn-primary mt-2", type: "button" },
+      "Save"
+    )
+  );
+
+  const clientScript = domReady(/*javascript*/ `
+    (async () => {
+      console.log(window);
+      const statusDiv = document.getElementById('${statusId}');
+      const docListEl = document.getElementById('doc-list');
+      const btnNewDoc = document.getElementById('btn-new-doc');
+      const btnToggleTheme = document.getElementById('btn-toggle-theme');
+      const btnSwitchEditor = document.getElementById('btn-switch-editor');
+      const btnUndo = document.getElementById('btn-undo');
+      const btnRedo = document.getElementById('btn-redo');
+      const editorContainer = document.getElementById('affine-editor-container');
+      const saveBtn = document.getElementById('${saveBtnId}');
+
+      try {
+        const bs = window.blocksuite || window.BlockSuite || window.Affine || {};
+        if (!bs.presets || !bs.store || !bs.blocks) {
+          statusDiv.innerHTML = 'Error: BlockSuite bundle missing';
+          return;
+        }
+
+        const presets = bs.presets;
+        const store = bs.store;
+        const blocks = bs.blocks;
+        const AffineEditorContainer = presets.AffineEditorContainer;
+        const PageEditor = presets.PageEditor;
+        const EdgelessEditor = presets.EdgelessEditor;
+        const DocCollection = store.DocCollection;
+        const Schema = store.Schema;
+        const Text = store.Text;
+        const Job = store.Job;
+
+        if (!AffineEditorContainer || !DocCollection || !Schema || !Text || !Job) {
+          statusDiv.innerHTML = 'Error: BlockSuite store exports missing';
+          return;
+        }
+
+        const schema = new Schema().register(blocks.AffineSchemas);
+        const collection = new DocCollection({ schema });
+        collection.meta.initialize();
+        const job = new Job({ collection });
+
+        let activeDocId = null;
+        let editor = null;
+        let currentEditorMode = 'page'; // 'page' or 'edgeless'
+        let currentId = '${state?.id || ""}';
+
+        function toggleTheme() {
+          if (!btnToggleTheme) return;
+          const html = document.documentElement;
+          const isDark = html.getAttribute('data-theme') === 'dark';
+          if (isDark) {
+            html.removeAttribute('data-theme');
+            html.classList.remove('dark', 'sl-theme-dark');
+            html.classList.add('light', 'sl-theme-light');
+            btnToggleTheme.textContent = 'Light';
+          } else {
+            html.setAttribute('data-theme', 'dark');
+            html.classList.remove('light', 'sl-theme-light');
+            html.classList.add('dark', 'sl-theme-dark');
+            btnToggleTheme.textContent = 'Dark';
+          }
+        }
+
+        if (btnToggleTheme) {
+          btnToggleTheme.onclick = toggleTheme;
+        }
+
+        if (btnUndo) {
+          btnUndo.onclick = () => {
+            if (activeDocId) {
+              const doc = collection.getDoc(activeDocId);
+              if (doc) doc.undo();
+            }
+          };
+        }
+
+        if (btnRedo) {
+          btnRedo.onclick = () => {
+            if (activeDocId) {
+              const doc = collection.getDoc(activeDocId);
+              if (doc) doc.redo();
+            }
+          };
+        }
+
+        if (btnSwitchEditor) {
+          btnSwitchEditor.onclick = () => {
+            currentEditorMode = currentEditorMode === 'page' ? 'edgeless' : 'page';
+            if (activeDocId) {
+              const doc = collection.getDoc(activeDocId);
+              mountEditor(doc);
+            }
+          };
+        }
+
+        function mountEditor(doc) {
+          if (!doc) return;
+          activeDocId = doc.id;
+          editorContainer.innerHTML = '';
+          
+          if (currentEditorMode === 'edgeless') {
+            editor = new EdgelessEditor();
+          } else {
+            // editor = new PageEditor();
+            editor = new AffineEditorContainer();
+          }
+          
+          editor.doc = doc;
+          editorContainer.appendChild(editor);
+          renderDocList();
+        }
+
+        function initDoc(doc, titleText) {
+          if (!doc) return;
+          doc.load(() => {
+            const pageBlockId = doc.addBlock('affine:page', {
+              title: new Text(titleText || 'Untitled'),
+            });
+            doc.addBlock('affine:surface', {}, pageBlockId);
+            const noteId = doc.addBlock('affine:note', {}, pageBlockId);
+            doc.addBlock('affine:paragraph', {}, noteId);
+          });
+        }
+
+        function renderDocList() {
+          if (!docListEl) return;
+          docListEl.innerHTML = '';
+          const docMetas = collection.meta.docMetas || [];
+          docMetas.forEach((meta) => {
+            const btn = document.createElement('button');
+            btn.textContent = meta.title || meta.id;
+            btn.className = 'btn btn-sm ' + (activeDocId === meta.id ? 'btn-secondary' : 'btn-outline-secondary');
+            btn.onclick = () => {
+              const targetDoc = collection.getDoc(meta.id);
+              if (!targetDoc) return;
+              mountEditor(targetDoc);
+            };
+            docListEl.appendChild(btn);
+          });
+        }
+
+        async function loadInitialDocs() {
+          const raw = ${JSON.stringify(initialJSON)};
+          let parsed = raw;
+          if (typeof parsed === 'string') {
+            try {
+              parsed = JSON.parse(parsed);
+            } catch (err) {
+              console.warn('Failed to parse stored BlockSuite JSON', err);
+              parsed = null;
+            }
+          }
+          if (parsed && parsed.docs && Array.isArray(parsed.docs) && parsed.docs.length) {
+            for (const snapshot of parsed.docs) {
+              console.log(snapshot)
+              try {
+                await job.snapshotToDoc(snapshot);
+              } catch (err) {
+                console.warn('Failed to hydrate doc snapshot', err);
+              }
+            }
+            return true;
+          }
+          return false;
+        }
+
+        const hydrated = await loadInitialDocs();
+        if (!hydrated) {
+          const seedDoc = collection.createDoc({ id: 'page1' });
+          initDoc(seedDoc, 'Untitled');
+        }
+
+        const initialMeta = (collection.meta.docMetas || [])[0];
+        if (initialMeta) {
+          mountEditor(collection.getDoc(initialMeta.id));
+        } else {
+          editorContainer.innerHTML = '<div class="text-muted">No documents yet.</div>';
+        }
+
+        if (btnNewDoc) {
+          btnNewDoc.onclick = () => {
+            const docCount = (collection.meta.docMetas || []).length + 1;
+            const id = 'page' + docCount;
+            const doc = collection.createDoc({ id });
+            initDoc(doc, 'Page ' + docCount);
+            mountEditor(doc);
+          };
+        }
+
+        saveBtn.addEventListener('click', async () => {
+          try {
+            saveBtn.disabled = true;
+            statusDiv.innerHTML = '<div class="alert alert-info">Saving...</div>';
+            const docMetas = collection.meta.docMetas || [];
+            const snapshots = [];
+            for (const meta of docMetas) {
+              const doc = collection.getDoc(meta.id);
+              if (!doc) continue;
+              doc.load();
+              snapshots.push(await job.docToSnapshot(doc));
+            }
+            const payload = {
+              docs: snapshots,
+              info: job.collectionInfoToSnapshot(),
+            };
+            console.log('BlockSuite snapshot:', snapshots);
+
+            const saveUrl = '/view/${viewname}/save';
+            const response = await fetch(saveUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'CSRF-Token': '${csrfToken}',
+              },
+              body: JSON.stringify({
+                id: currentId,
+                content: payload,
+                field: '${json_field}',
+              }),
+            });
+
+            if (response.redirected) {
+              window.location.href = response.url;
+              return;
+            }
+
+            const result = await response.json();
+
+            if (!response.ok) {
+              throw new Error(result.error || 'Save failed');
+            }
+
+            if (result.id) currentId = result.id;
+          } catch (error) {
+            console.error('Save error:', error);
+            statusDiv.innerHTML = '<div class="alert alert-danger">Error: ' + (error && error.message ? error.message : error) + '</div>';
+          } finally {
+            saveBtn.disabled = false;
+          }
+        });
+
+      } catch (error) {
+        console.error('Editor initialization error:', error);
+        statusDiv.innerHTML = '<div class="alert alert-danger">Editor error: ' + (error && error.message ? error.message : error) + '</div>';
+      }
+    })();
+  `);
+  out.push(script(clientScript));
+  return out.join("\n");
+};
+
+const save = async (table_id, viewname, config, body, { req, res }) => {
+  try {
+    const id = body.id;
+    const content = body.content;
+
+    console.log(table_id, viewname, config, body);
+
+    const table = await Table.findOne(table_id);
+    if (!table) throw new Error("Table not found");
+
+    const fieldName = body.field || config.json_field;
+    if (!fieldName) throw new Error("Field name not specified");
+
+    const update = {};
+    update[fieldName] =
+      typeof content === "object" ? JSON.stringify(content) : content;
+
+    let newId = id;
+    if (id) {
+      await table.updateRow(update, id, req.user);
+    } else {
+      newId = await table.insertRow(update, req.user);
+    }
+
+    req.flash("success", req.__("Saved successfully"));
+    res.redirect(`/table/${table.id}`);
+  } catch (err) {
+    console.error(err);
+    return { json: { error: err.message }, status: 500 };
+  }
+};
+
+module.exports = {
+  name: "BlockSuiteDocument",
+  display_state_form: false,
+  configuration_workflow,
+  get_state_fields,
+  run,
+  routes: { save },
+};
