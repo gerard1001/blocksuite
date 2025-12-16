@@ -27,6 +27,16 @@ const configuration_workflow = () =>
                 attributes: { options },
                 required: true,
               },
+              {
+                name: "read_only",
+                label: "Read-only",
+                type: "Bool",
+              },
+              {
+                name: "multiple_pages",
+                label: "Multiple pages",
+                type: "Bool",
+              },
             ],
           });
         },
@@ -48,58 +58,99 @@ const run = async (
   const csrfToken = req && req.csrfToken ? req.csrfToken() : "";
   const json_field = configuration.json_field;
   const table = await Table.findOne(table_id);
-
   const fieldName = configuration.json_field;
+  const configReadOnly = !!configuration.read_only;
+  const multiplePages = !!configuration.multiple_pages;
 
   let row;
   try {
-    row = state && state.id ? await table.getRow(state.id) : null;
+    row = state && state.id ? await table.getRow({ id: state.id }) : null;
   } catch (e) {
     row = null;
   }
   const rawVal = row && fieldName && row[fieldName] ? row[fieldName] : null;
   const initialJSON = rawVal ? rawVal : null;
 
+  const user = req && req.user;
+  const isOwner = table.is_owner(req.user, row || {});
+
+  const canRead = isOwner || user.role_id <= table.min_role_read;
+  if (!canRead && !configReadOnly) {
+    return "";
+  }
+
+  const canWrite = isOwner || user.role_id <= table.min_role_write;
+  const effectiveReadOnly = configReadOnly || !canWrite;
+
   const rnd = 0;
   const saveBtnId = `blocksuite-save-${rnd}`;
-  const statusId = `blocksuite-status-${rnd}`;
 
-  const out = [];
-  out.push(`<div id="${statusId}" class="mt-2"></div>`);
-  out.push(`<div id="toolbar" class="d-flex gap-2 align-items-center mb-2 p-2 border-bottom">
-      <button id="btn-toggle-theme" class="btn btn-secondary btn-sm">Dark</button>
-      <button id="btn-undo" class="btn btn-outline-secondary btn-sm" title="Undo">↩</button>
-      <button id="btn-redo" class="btn btn-outline-secondary btn-sm" title="Redo">↪</button>
-      <button id="btn-switch-editor" class="btn btn-outline-secondary btn-sm" title="Switch Editor Mode">⇄</button>
-      <button id="btn-new-doc" class="btn btn-primary btn-sm">+ New Doc</button>
-      <span class="border-start mx-2" style="height: 20px;"></span>
-      <div id="doc-list" class="d-flex gap-1 flex-wrap"></div>
-    </div>`);
-  out.push(`<div id="affine-editor-container" style="height: 70vh;"></div>`);
-  out.push(
-    button(
-      { id: saveBtnId, class: "btn btn-primary mt-2", type: "button" },
-      "Save"
-    )
-  );
-
-  const clientScript = domReady(/*javascript*/ `
+  return (
+    div(
+      {
+        id: "toolbar",
+        class: "d-flex gap-2 align-items-center mb-2 p-2 border-bottom",
+      },
+      button(
+        {
+          id: "btn-undo",
+          class: "btn btn-outline-secondary btn-sm",
+          title: "Undo",
+        },
+        "↩"
+      ),
+      button(
+        {
+          id: "btn-redo",
+          class: "btn btn-outline-secondary btn-sm",
+          title: "Redo",
+        },
+        "↪"
+      ),
+      button(
+        {
+          id: "btn-switch-editor",
+          class: "btn btn-outline-secondary btn-sm",
+          title: "Switch Editor Mode",
+        },
+        "⇄"
+      ),
+      !effectiveReadOnly && multiplePages
+        ? button(
+            { id: "btn-new-doc", class: "btn btn-primary btn-sm" },
+            "+ New Doc"
+          )
+        : "",
+      multiplePages
+        ? div({ class: "border-start mx-2", style: "height: 20px;" }) +
+            div({ id: "doc-list", class: "d-flex gap-1 flex-wrap" })
+        : ""
+    ) +
+    div({ id: "affine-editor-container", style: "height: 70vh;" }) +
+    (!effectiveReadOnly
+      ? button(
+          { id: saveBtnId, class: "btn btn-primary mt-2", type: "button" },
+          "Save"
+        )
+      : "") +
+    script(
+      domReady(/*javascript*/ `
     (async () => {
       console.log(window);
-      const statusDiv = document.getElementById('${statusId}');
       const docListEl = document.getElementById('doc-list');
       const btnNewDoc = document.getElementById('btn-new-doc');
-      const btnToggleTheme = document.getElementById('btn-toggle-theme');
       const btnSwitchEditor = document.getElementById('btn-switch-editor');
       const btnUndo = document.getElementById('btn-undo');
       const btnRedo = document.getElementById('btn-redo');
       const editorContainer = document.getElementById('affine-editor-container');
       const saveBtn = document.getElementById('${saveBtnId}');
 
+      const readOnly = ${effectiveReadOnly ? "true" : "false"};
+      const multiplePages = ${multiplePages ? "true" : "false"};
+
       try {
         const bs = window.blocksuite || window.BlockSuite || window.Affine || {};
         if (!bs.presets || !bs.store || !bs.blocks) {
-          statusDiv.innerHTML = 'Error: BlockSuite bundle missing';
           return;
         }
 
@@ -115,7 +166,6 @@ const run = async (
         const Job = store.Job;
 
         if (!AffineEditorContainer || !DocCollection || !Schema || !Text || !Job) {
-          statusDiv.innerHTML = 'Error: BlockSuite store exports missing';
           return;
         }
 
@@ -128,29 +178,19 @@ const run = async (
         let editor = null;
         let currentEditorMode = 'page'; // 'page' or 'edgeless'
         let currentId = '${state?.id || ""}';
-
-        function toggleTheme() {
-          if (!btnToggleTheme) return;
-          const html = document.documentElement;
-          const isDark = html.getAttribute('data-theme') === 'dark';
-          if (isDark) {
-            html.removeAttribute('data-theme');
-            html.classList.remove('dark', 'sl-theme-dark');
-            html.classList.add('light', 'sl-theme-light');
-            btnToggleTheme.textContent = 'Light';
-          } else {
-            html.setAttribute('data-theme', 'dark');
-            html.classList.remove('light', 'sl-theme-light');
-            html.classList.add('dark', 'sl-theme-dark');
-            btnToggleTheme.textContent = 'Dark';
-          }
+        const html = document.documentElement;
+        const userTheme = (window._sc_lightmode === 'dark') ? 'dark' : 'light';
+        if (userTheme === 'dark') {
+          html.setAttribute('data-theme', 'dark');
+          html.classList.remove('light', 'sl-theme-light');
+          html.classList.add('dark', 'sl-theme-dark');
+        } else {
+          html.removeAttribute('data-theme');
+          html.classList.remove('dark', 'sl-theme-dark');
+          html.classList.add('light', 'sl-theme-light');
         }
 
-        if (btnToggleTheme) {
-          btnToggleTheme.onclick = toggleTheme;
-        }
-
-        if (btnUndo) {
+        if (btnUndo && !readOnly) {
           btnUndo.onclick = () => {
             if (activeDocId) {
               const doc = collection.getDoc(activeDocId);
@@ -159,7 +199,7 @@ const run = async (
           };
         }
 
-        if (btnRedo) {
+        if (btnRedo && !readOnly) {
           btnRedo.onclick = () => {
             if (activeDocId) {
               const doc = collection.getDoc(activeDocId);
@@ -192,6 +232,51 @@ const run = async (
           
           editor.doc = doc;
           editorContainer.appendChild(editor);
+
+          if (readOnly && editorContainer) {
+            const stopEvent = (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            };
+
+            editorContainer.addEventListener('beforeinput', stopEvent, { capture: true });
+            editorContainer.addEventListener('paste', stopEvent, { capture: true });
+            editorContainer.addEventListener('cut', stopEvent, { capture: true });
+            editorContainer.addEventListener('drop', stopEvent, { capture: true });
+            editorContainer.addEventListener(
+              'keydown',
+              (e) => {
+                const navKeys = [
+                  'ArrowUp',
+                  'ArrowDown',
+                  'ArrowLeft',
+                  'ArrowRight',
+                  'PageUp',
+                  'PageDown',
+                  'Home',
+                  'End',
+                  'Tab',
+                  'Shift',
+                  'Control',
+                  'Alt',
+                  'Meta',
+                  'Escape',
+                  'F5',
+                ];
+                const isNav =
+                  navKeys.includes(e.key) ||
+                  e.key.startsWith('F') ||
+                  e.ctrlKey ||
+                  e.metaKey ||
+                  e.altKey;
+                if (!isNav) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }
+              },
+              { capture: true }
+            );
+          }
           renderDocList();
         }
 
@@ -262,7 +347,7 @@ const run = async (
           editorContainer.innerHTML = '<div class="text-muted">No documents yet.</div>';
         }
 
-        if (btnNewDoc) {
+        if (btnNewDoc && !readOnly && multiplePages) {
           btnNewDoc.onclick = () => {
             const docCount = (collection.meta.docMetas || []).length + 1;
             const id = 'page' + docCount;
@@ -272,10 +357,9 @@ const run = async (
           };
         }
 
-        saveBtn.addEventListener('click', async () => {
+        if (saveBtn && !readOnly) saveBtn.addEventListener('click', async () => {
           try {
             saveBtn.disabled = true;
-            statusDiv.innerHTML = '<div class="alert alert-info">Saving...</div>';
             const docMetas = collection.meta.docMetas || [];
             const snapshots = [];
             for (const meta of docMetas) {
@@ -318,7 +402,6 @@ const run = async (
             if (result.id) currentId = result.id;
           } catch (error) {
             console.error('Save error:', error);
-            statusDiv.innerHTML = '<div class="alert alert-danger">Error: ' + (error && error.message ? error.message : error) + '</div>';
           } finally {
             saveBtn.disabled = false;
           }
@@ -326,12 +409,11 @@ const run = async (
 
       } catch (error) {
         console.error('Editor initialization error:', error);
-        statusDiv.innerHTML = '<div class="alert alert-danger">Editor error: ' + (error && error.message ? error.message : error) + '</div>';
       }
-    })();
-  `);
-  out.push(script(clientScript));
-  return out.join("\n");
+    })();  
+    `)
+    )
+  );
 };
 
 const save = async (table_id, viewname, config, body, { req, res }) => {
