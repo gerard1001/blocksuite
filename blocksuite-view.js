@@ -82,7 +82,12 @@ const run = async (
     row = null;
   }
   const rawVal = row && fieldName && row[fieldName] ? row[fieldName] : null;
-  const initialJSON = rawVal ? rawVal : null;
+  const initialJSON =
+    typeof rawVal === "string" && rawVal
+      ? JSON.parse(rawVal)
+      : rawVal
+      ? rawVal
+      : null;
 
   const user = req && req.user;
   const isOwner = table.is_owner(req.user, row || {});
@@ -496,9 +501,12 @@ const save = async (table_id, viewname, config, body, { req, res }) => {
 
     const fieldName = body.field || config.json_field;
     if (!fieldName) throw new Error("Field name not specified");
+    const field = table.getField(fieldName);
 
     const update = {};
-    update[fieldName] = content;
+    
+    if (field.type?.name === "JSON") update[fieldName] = content;
+    else update[fieldName] = JSON.stringify(content);
     //typeof content === "object" ? JSON.stringify(content) : content;
 
     let newId = id;
