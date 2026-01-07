@@ -185,10 +185,5 @@ module.exports = {
       run: blocksuite_json_to_html,
       arguments: [{ name: "content", type: "String" }],
     },
-    blocksuite_fx: {
-      description: "Convert a BlockSuite JSON field on a row to HTML markup",
-      run: () => {},
-      arguments: [{ name: "row", type: "Object" }],
-    },
   },
 };

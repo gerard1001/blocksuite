@@ -39,9 +39,18 @@ const configuration_workflow = () =>
                 type: "Bool",
               },
               {
-                name: "edgeless_switcher",
-                label: "Show edgeless switcher",
-                type: "Bool",
+                name: "edgeless",
+                label: "Edgeless mode",
+                type: "String",
+                default: "Option (default off)",
+                attributes: {
+                  options: [
+                    "Always",
+                    "Option (default on)",
+                    "Option (default off)",
+                    "Never"
+                  ]
+                },
               },
               {
                 name: "autosave",
@@ -71,8 +80,13 @@ const run = async (
   const fieldName = configuration.json_field;
   const configReadOnly = !!configuration.read_only;
   const multiplePages = !!configuration.multiple_pages;
-  const edgelessSwitcher = !!configuration.edgeless_switcher;
+  const edgeless = configuration.edgeless || "Option (default off)";
   const autosave = !!configuration.autosave;
+  
+  // Determine if switcher button should be shown
+  const showEdgelessSwitcher = edgeless === "Option (default on)" || edgeless === "Option (default off)";
+  // Determine initial editor mode
+  const initialEditorMode = (edgeless === "Always" || edgeless === "Option (default on)") ? "edgeless" : "page";
 
   let row;
   try {
@@ -124,7 +138,7 @@ const run = async (
         },
         "↪"
       ),
-      edgelessSwitcher
+      showEdgelessSwitcher
         ? button(
             {
               id: "btn-switch-editor",
@@ -176,6 +190,7 @@ const run = async (
       const readOnly = ${effectiveReadOnly ? "true" : "false"};
       const multiplePages = ${multiplePages ? "true" : "false"};
       const autosave = ${autosave ? "true" : "false"};
+      const initialEditorMode = "${initialEditorMode}";
 
       try {
         const bs = window.blocksuite || window.BlockSuite || window.Affine || {};
@@ -214,7 +229,7 @@ const run = async (
 
         let activeDocId = null;
         let editor = null;
-        let currentEditorMode = 'page'; // 'page' or 'edgeless'
+        let currentEditorMode = initialEditorMode; // 'page' or 'edgeless'
         let currentId = '${state?.id || ""}';
         const html = document.documentElement;
         const userTheme = (window._sc_lightmode === 'dark') ? 'dark' : 'light';
